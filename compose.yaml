@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.model
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim-bookworm}
+        BASE_IMAGE: ${BASE_IMAGE:-m.daocloud.io/docker.io/library/python:3.11-slim-bookworm}
         APT_MIRROR: ${APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
         APT_SECURITY_MIRROR: ${APT_SECURITY_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian-security}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple}

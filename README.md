@@ -8,10 +8,10 @@
 镜像使用 Python 3.11、paddlepaddle-gpu 3.2.0（cu118）、paddleocr/paddlex 3.7.0。
 若 GPU 架构需要更新 CUDA，按 Paddle 官方兼容表调整 Dockerfile.model 的 Paddle 版本和 wheel 源。
 
-先按下面“国内镜像配置”配置 Docker 拉取，再进入本目录执行：
+默认通过 DaoCloud 国内代理拉取基础镜像，进入本目录执行：
 
 ```bash
-docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all m.daocloud.io/docker.io/nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
 cp .env.example .env
 # 可直接使用默认配置；MODEL_API_KEY 可不填
 docker compose config --quiet
@@ -45,14 +45,28 @@ GPU 不可用时启动失败。默认使用宿主 GPU 0，可在 `.env` 修改 `
 | Python 依赖 | 清华 PyPI 镜像 | `PIP_INDEX_URL` |
 | Paddle GPU 安装包 | 飞桨官方国内 CUDA 11.8 源 | `PADDLE_INDEX_URL` |
 | OCR 模型权重 | 百度 BOS 优先 | `PADDLE_PDX_MODEL_SOURCE=BOS` |
-| Docker 基础镜像 | Docker 官方镜像名，经宿主加速器拉取 | `BASE_IMAGE` |
+| Docker 基础镜像 | DaoCloud 国内代理 | `BASE_IMAGE` |
 
 变量已写入 `.env.example`，Compose 中也有默认值。Paddle GPU 安装显式使用飞桨源，覆盖通用 pip 源，以保留正确的 CUDA 版本。
 配置依据：[清华 PyPI](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)、[清华 Debian](https://mirrors.tuna.tsinghua.edu.cn/help/debian/)、[PaddleX 模型源配置](https://github.com/PaddlePaddle/PaddleX/blob/release/3.7/paddlex/utils/flags.py)。
 
-### Docker Hub 镜像加速
+### Docker Hub 连接被重置时
 
-基础镜像的拉取发生在 Dockerfile 执行之前，需在服务器 Docker 引擎配置。
+默认 `BASE_IMAGE=m.daocloud.io/docker.io/library/python:3.11-slim-bookworm`，使用 [DaoCloud 官方文档](https://github.com/DaoCloud/public-image-mirror)提供的镜像前缀方式，无需重启 Docker。
+如果旧 `.env` 仍为 `BASE_IMAGE=python:3.11-slim-bookworm`，它会覆盖新默认值。先修改，再重新构建：
+
+```bash
+sed -i 's|^BASE_IMAGE=.*|BASE_IMAGE=m.daocloud.io/docker.io/library/python:3.11-slim-bookworm|' .env
+docker compose build --pull ocr-model
+docker compose up -d
+```
+
+若 `.env` 没有 `BASE_IMAGE` 行，使用 Compose 的默认值即可。第三方代理是否可达仍取决于服务器网络和服务状态，也可通过 `BASE_IMAGE` 配置自己的国内仓库。
+
+### 可选：Docker 引擎镜像加速
+
+基础镜像的拉取发生在 Dockerfile 执行之前，因此 apt/pip 换源不能解决 Docker Hub 连接失败。
+如果希望保留原始 `BASE_IMAGE=python:3.11-slim-bookworm`，可在服务器 Docker 引擎配置加速器。
 `deploy/daemon.json.example` 提供了阿里云加速配置模板。将其中 `YOUR_ACCELERATOR_ID` 替换为你在阿里云容器镜像服务控制台取得的地址，按账号和服务器适用条件使用；详见[阿里云官方说明](https://help.aliyun.com/zh/acr/user-guide/accelerate-the-pulls-of-docker-official-images)。
 
 将模板中的 `registry-mirrors` 字段合并到服务器 `/etc/docker/daemon.json`，保留已有配置，尤其是 NVIDIA 的 `runtimes`。模板中的占位地址不能直接使用。修改后执行：

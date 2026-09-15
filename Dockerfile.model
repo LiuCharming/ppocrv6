@@ -1,0 +1,25 @@
+ARG BASE_IMAGE=python:3.11-slim-bookworm
+FROM ${BASE_IMAGE}
+ARG APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+ARG APT_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} PIP_DEFAULT_TIMEOUT=120 \
+    PADDLE_PDX_MODEL_SOURCE=BOS
+WORKDIR /app
+RUN sed -i \
+      -e "s|http://deb.debian.org/debian-security|${APT_SECURITY_MIRROR}|g" \
+      -e "s|http://deb.debian.org/debian|${APT_MIRROR}|g" \
+      /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+ARG PADDLE_VERSION=3.2.0
+ARG PADDLE_INDEX_URL=https://www.paddlepaddle.org.cn/packages/stable/cu118/
+RUN pip install --no-cache-dir paddlepaddle-gpu==${PADDLE_VERSION} -i ${PADDLE_INDEX_URL}
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt paddleocr==3.7.0 paddlex==3.7.0
+COPY common common
+COPY model_service model_service
+EXPOSE 8000
+CMD ["uvicorn", "model_service.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

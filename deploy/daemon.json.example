@@ -1,0 +1,5 @@
+{
+  "registry-mirrors": [
+    "https://YOUR_ACCELERATOR_ID.mirror.aliyuncs.com"
+  ]
+}

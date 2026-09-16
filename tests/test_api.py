@@ -1,5 +1,6 @@
 import io
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -28,6 +29,8 @@ class Engine:
 @pytest.fixture(autouse=True)
 def settings(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("OCR_CONCURRENCY", "2")
+    monkeypatch.setenv("OCR_QUEUE_SIZE", "2")
     monkeypatch.setattr(model, "create_engine", Engine)
 
 
@@ -64,8 +67,10 @@ def test_pixel_limit(monkeypatch):
     assert error.value.status_code == 413
 
 
-def test_gpu_capacity(monkeypatch):
+def test_concurrency_queue_and_capacity(monkeypatch):
     started, release = threading.Event(), threading.Event()
+    monkeypatch.setenv("OCR_CONCURRENCY", "1")
+    monkeypatch.setenv("OCR_QUEUE_SIZE", "1")
 
     class SlowEngine(Engine):
         def predict(self, image):
@@ -76,14 +81,23 @@ def test_gpu_capacity(monkeypatch):
     monkeypatch.setattr(model, "create_engine", SlowEngine)
     with TestClient(model.app) as client:
         responses = []
-        worker = threading.Thread(target=lambda: responses.append(
+        first = threading.Thread(target=lambda: responses.append(
             client.post("/v1/ocr", headers=AUTH, files={"file": png()})))
-        worker.start()
+        first.start()
         try:
             assert started.wait(5)
             assert client.get("/healthz").status_code == 200
+            second = threading.Thread(target=lambda: responses.append(
+                client.post("/v1/ocr", headers=AUTH, files={"file": png()})))
+            second.start()
+            deadline = time.monotonic() + 2
+            while client.get("/healthz").json()["queued"] != 1:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            # One inference runs and one waits; the third request exceeds capacity.
             assert client.post("/v1/ocr", headers=AUTH, files={"file": png()}).status_code == 503
         finally:
             release.set()
-            worker.join(5)
-        assert responses[0].status_code == 200
+            first.join(5)
+            second.join(5)
+        assert [response.status_code for response in responses] == [200, 200]

@@ -1,4 +1,27 @@
-# PP-OCRv6 GPU 服务
+# PP-OCRv6 服务
+
+## Windows 本地 CPU 启动
+
+安装 Python 3.11 后，在项目目录执行 PowerShell 命令：
+
+```powershell
+python -m venv .venv-cpu
+.\.venv-cpu\Scripts\python.exe -m pip install -r requirements-cpu.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+powershell -ExecutionPolicy Bypass -File .\start-cpu.ps1
+```
+
+本地模式使用 CPU，默认监听 `127.0.0.1:8001`，模型从 BOS 下载。
+接口：`http://127.0.0.1:8001/v1/ocr`；文档：`http://127.0.0.1:8001/docs`。
+停止前台服务按 Ctrl+C。更换端口可使用 `start-cpu.ps1 -Port 8002`。
+CPU 默认 2 路并发、16 个等待位；例如 4 路并发可使用 `start-cpu.ps1 -Concurrency 4 -QueueSize 32`。
+本地启动脚本不读取 Docker 的 `.env`，默认无需密钥；需要时在启动前设置 `$env:API_KEY`。
+
+```powershell
+curl.exe http://127.0.0.1:8001/healthz
+curl.exe -X POST http://127.0.0.1:8001/v1/ocr -F "file=@C:/images/test.jpg"
+```
+
+## Docker GPU 部署
 
 单个 Docker 容器运行 PP-OCRv6_medium 和 HTTP API，直接上传图片，返回 JSON 全文、逐行文字、置信度和坐标。
 
@@ -123,7 +146,9 @@ curl -X POST http://localhost:8001/v1/ocr \
 - `MODEL_API_KEY`：可选调用密钥，默认不设置；为空时关闭鉴权，非空时通过容器内的 `API_KEY` 启用鉴权。
 - `MAX_IMAGE_MB`：默认 10 MiB；`MAX_IMAGE_PIXELS`：默认 2500 万。文件大小校验在 multipart 解析后执行，反向代理也应限制请求体大小。
 - 接收 multipart `file`，支持单帧 PNG/JPEG/WEBP/BMP/TIFF，不接收 PDF 或图片 URL。
-- 同时执行一个 GPU 推理请求，忙时返回 503 和 `Retry-After: 1`。保持单 worker，避免重复加载模型。
+- `OCR_CONCURRENCY`：并发推理工作数，默认 2。每个工作有独立模型副本和专用线程，避免同时使用同一 Paddle Predictor。GPU 显存不够时改为 1，再逐步压测调大。
+- `OCR_QUEUE_SIZE`：等待队列长度，默认 16。请求超过“正在推理数 + 等待队列”时返回 503 和 `Retry-After: 1`；排队内的请求会在模型空闲后处理。
+- `/healthz` 返回当前并发数、排队数和队列容量，可用于负载均衡健康检查。
 - 默认关闭额外的文档方向分类、文档矫正和文本行方向分类模型。
 - 错误 JSON 使用 `detail`：400 无效图片、401 密钥错误、413 图片过大、415 不支持的格式、422 参数缺失、500 推理失败、503 GPU 繁忙。
 
@@ -138,7 +163,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-覆盖响应格式、BGR 转换、鉴权、无文字结果、图片校验、大小限制和 GPU 繁忙处理。
+覆盖响应格式、BGR 转换、鉴权、无文字结果、图片校验、大小限制及并发队列满载处理。
 实际部署后上传已知文本图片核对结果，并用 `nvidia-smi` 确认推理进程。
 
 ```bash

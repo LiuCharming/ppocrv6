@@ -1,5 +1,7 @@
 .env
 .venv/
+.venv-cpu/
+.runtime/
 __pycache__/
 .pytest_cache/
 *.pyc

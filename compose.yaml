@@ -12,6 +12,9 @@ services:
         PADDLE_INDEX_URL: ${PADDLE_INDEX_URL:-https://www.paddlepaddle.org.cn/packages/stable/cu118/}
     restart: unless-stopped
     environment:
+      OCR_DEVICE: gpu:0
+      OCR_CONCURRENCY: ${OCR_CONCURRENCY:-2}
+      OCR_QUEUE_SIZE: ${OCR_QUEUE_SIZE:-16}
       PADDLE_PDX_MODEL_SOURCE: ${PADDLE_PDX_MODEL_SOURCE:-BOS}
       MODEL_SIZE: ${MODEL_SIZE:-medium}
       API_KEY: ${MODEL_API_KEY:-}

@@ -1,7 +1,9 @@
 import io
 import threading
 import time
+import asyncio
 
+import httpx
 import numpy as np
 import pytest
 from fastapi import HTTPException
@@ -10,6 +12,7 @@ from PIL import Image
 
 from common import api
 from model_service import main as model
+from router_service import main as router
 
 
 def png():
@@ -31,6 +34,7 @@ def settings(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
     monkeypatch.setenv("OCR_CONCURRENCY", "2")
     monkeypatch.setenv("OCR_QUEUE_SIZE", "2")
+    monkeypatch.setenv("MODEL_URLS", "http://model-a,http://model-b,http://model-c")
     monkeypatch.setattr(model, "create_engine", Engine)
 
 
@@ -101,3 +105,35 @@ def test_concurrency_queue_and_capacity(monkeypatch):
             first.join(5)
             second.join(5)
         assert [response.status_code for response in responses] == [200, 200]
+
+
+def test_router_round_robin_and_failover():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.host == "model-b":
+            return httpx.Response(503)
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={
+            "text": request.url.host,
+            "lines": [],
+            "model": "PP-OCRv6_medium",
+            "width": 8,
+            "height": 5,
+        })
+
+    with TestClient(router.app) as client:
+        original = router.app.state.client
+        upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        router.app.state.client = upstream
+        try:
+            assert client.get("/healthz").json()["ready_models"] == 2
+            first = client.post("/v1/ocr", headers=AUTH, files={"file": png()})
+            second = client.post("/v1/ocr", headers=AUTH, files={"file": png()})
+            assert first.json()["text"] == "model-a"
+            assert second.json()["text"] == "model-c"
+        finally:
+            asyncio.run(upstream.aclose())
+            router.app.state.client = original

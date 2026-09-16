@@ -21,9 +21,17 @@ curl.exe http://127.0.0.1:8001/healthz
 curl.exe -X POST http://127.0.0.1:8001/v1/ocr -F "file=@C:/images/test.jpg"
 ```
 
-## Docker GPU 部署
+## Docker GPU 部署：3 个模型容器 + 路由容器
 
-单个 Docker 容器运行 PP-OCRv6_medium 和 HTTP API，直接上传图片，返回 JSON 全文、逐行文字、置信度和坐标。
+Docker 部署包含 4 个容器：三个 PP-OCRv6 模型容器和一个路由容器。只有路由容器对外暴露 8001 端口。
+
+```text
+调用方 → ocr-router:8001 → ocr-model-1  ┐
+                         → ocr-model-2  ├→ 同一张 GPU
+                         → ocr-model-3  ┘
+```
+
+路由按轮询分发。模型容器繁忙时，路由自动尝试其余实例；三个实例都忙或不可用时才返回 503。
 
 ## 部署
 
@@ -39,18 +47,18 @@ cp .env.example .env
 # 可直接使用默认配置；MODEL_API_KEY 可不填
 docker compose config --quiet
 docker compose up -d --build --remove-orphans
-docker compose logs -f ocr-model
+docker compose logs -f ocr-router
 ```
 
 `--remove-orphans` 清理同一 Compose 项目此前的业务容器（如已部署旧版）。
 沿用旧 `.env` 时可删除 `API_KEY`、`API_PORT`、`MODEL_TIMEOUT_SECONDS`，远程访问需将 `MODEL_BIND` 改为 `0.0.0.0`。
 
-首次启动优先从百度 BOS 下载模型，权重保存在 `model-cache` 卷。模型初始化完成后 API 才可用。
+首次启动优先从百度 BOS 下载模型。三个模型容器各自有独立缓存卷，因此都会下载一份权重；模型初始化完成后路由 API 才会启动。
 GPU 不可用时启动失败。默认使用宿主 GPU 0，可在 `.env` 修改 `GPU_ID`。
 
 | 用途 | 默认地址 |
 |---|---|
-| OCR 接口 | `http://服务器IP:8001/v1/ocr` |
+| OCR 接口（路由） | `http://服务器IP:8001/v1/ocr` |
 | Swagger 文档 | `http://服务器IP:8001/docs` |
 | 健康检查 | `http://服务器IP:8001/healthz` |
 
@@ -146,9 +154,9 @@ curl -X POST http://localhost:8001/v1/ocr \
 - `MODEL_API_KEY`：可选调用密钥，默认不设置；为空时关闭鉴权，非空时通过容器内的 `API_KEY` 启用鉴权。
 - `MAX_IMAGE_MB`：默认 10 MiB；`MAX_IMAGE_PIXELS`：默认 2500 万。文件大小校验在 multipart 解析后执行，反向代理也应限制请求体大小。
 - 接收 multipart `file`，支持单帧 PNG/JPEG/WEBP/BMP/TIFF，不接收 PDF 或图片 URL。
-- `OCR_CONCURRENCY`：并发推理工作数，默认 2。每个工作有独立模型副本和专用线程，避免同时使用同一 Paddle Predictor。GPU 显存不够时改为 1，再逐步压测调大。
-- `OCR_QUEUE_SIZE`：等待队列长度，默认 16。请求超过“正在推理数 + 等待队列”时返回 503 和 `Retry-After: 1`；排队内的请求会在模型空闲后处理。
-- `/healthz` 返回当前并发数、排队数和队列容量，可用于负载均衡健康检查。
+- Docker 固定启动 3 个模型容器，每个 `OCR_CONCURRENCY=1`，以避免共享同一个 Paddle Predictor。总推理并发为 3。
+- `MODEL_QUEUE_SIZE`：每个模型容器等待队列长度，默认 1。总容量约为 3 个正在推理 + `3 × MODEL_QUEUE_SIZE` 个排队请求；路由会在模型满载时转发给其他实例。
+- 路由 `/healthz` 返回 `ready_models` 和 `total_models`；模型容器的 `/healthz` 只在 Docker 网络内可访问。
 - 默认关闭额外的文档方向分类、文档矫正和文本行方向分类模型。
 - 错误 JSON 使用 `detail`：400 无效图片、401 密钥错误、413 图片过大、415 不支持的格式、422 参数缺失、500 推理失败、503 GPU 繁忙。
 
@@ -167,12 +175,12 @@ python -m pytest -q
 实际部署后上传已知文本图片核对结果，并用 `nvidia-smi` 确认推理进程。
 
 ```bash
-docker compose exec ocr-model python -c "import paddle; print(paddle.__version__); print(paddle.is_compiled_with_cuda()); print(paddle.device.cuda.device_count())"
+docker compose exec ocr-model-1 python -c "import paddle; print(paddle.__version__); print(paddle.is_compiled_with_cuda()); print(paddle.device.cuda.device_count())"
 docker compose ps
-docker compose logs --tail=100 ocr-model
+docker compose logs --tail=100 ocr-router ocr-model-1 ocr-model-2 ocr-model-3
 docker compose down
 ```
 
-`docker compose down` 保留模型缓存卷；添加 `-v` 会删除缓存。
+`docker compose down` 保留三个模型缓存卷；添加 `-v` 会删除全部缓存。
 
 官方参考：[PP-OCRv6](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/algorithm/PP-OCRv6/PP-OCRv6.md)、[Paddle GPU 安装](https://www.paddlepaddle.org.cn/install/quick)。

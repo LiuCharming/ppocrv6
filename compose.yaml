@@ -1,43 +1,84 @@
+x-model: &model
+  build:
+    context: .
+    dockerfile: Dockerfile.model
+    args:
+      BASE_IMAGE: ${BASE_IMAGE:-m.daocloud.io/docker.io/library/python:3.11-slim-bookworm}
+      APT_MIRROR: ${APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
+      APT_SECURITY_MIRROR: ${APT_SECURITY_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian-security}
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple}
+      PADDLE_VERSION: ${PADDLE_VERSION:-3.2.0}
+      PADDLE_INDEX_URL: ${PADDLE_INDEX_URL:-https://www.paddlepaddle.org.cn/packages/stable/cu118/}
+  restart: unless-stopped
+  environment:
+    OCR_DEVICE: gpu:0
+    # One model copy per container; routing distributes requests across all three.
+    OCR_CONCURRENCY: 1
+    OCR_QUEUE_SIZE: ${MODEL_QUEUE_SIZE:-1}
+    PADDLE_PDX_MODEL_SOURCE: ${PADDLE_PDX_MODEL_SOURCE:-BOS}
+    MODEL_SIZE: ${MODEL_SIZE:-medium}
+    MAX_IMAGE_MB: ${MAX_IMAGE_MB:-10}
+    MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-25000000}
+  shm_size: 2gb
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${GPU_ID:-0}"]
+            capabilities: [gpu]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 300s
+
 services:
-  ocr-model:
+  ocr-model-1:
+    <<: *model
+    volumes:
+      - model-cache-1:/root/.paddlex
+
+  ocr-model-2:
+    <<: *model
+    volumes:
+      - model-cache-2:/root/.paddlex
+
+  ocr-model-3:
+    <<: *model
+    volumes:
+      - model-cache-3:/root/.paddlex
+
+  ocr-router:
     build:
       context: .
-      dockerfile: Dockerfile.model
+      dockerfile: Dockerfile.router
       args:
         BASE_IMAGE: ${BASE_IMAGE:-m.daocloud.io/docker.io/library/python:3.11-slim-bookworm}
-        APT_MIRROR: ${APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
-        APT_SECURITY_MIRROR: ${APT_SECURITY_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian-security}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple}
-        PADDLE_VERSION: ${PADDLE_VERSION:-3.2.0}
-        PADDLE_INDEX_URL: ${PADDLE_INDEX_URL:-https://www.paddlepaddle.org.cn/packages/stable/cu118/}
     restart: unless-stopped
     environment:
-      OCR_DEVICE: gpu:0
-      OCR_CONCURRENCY: ${OCR_CONCURRENCY:-2}
-      OCR_QUEUE_SIZE: ${OCR_QUEUE_SIZE:-16}
-      PADDLE_PDX_MODEL_SOURCE: ${PADDLE_PDX_MODEL_SOURCE:-BOS}
-      MODEL_SIZE: ${MODEL_SIZE:-medium}
+      MODEL_URLS: http://ocr-model-1:8000,http://ocr-model-2:8000,http://ocr-model-3:8000
+      MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-120}
       API_KEY: ${MODEL_API_KEY:-}
       MAX_IMAGE_MB: ${MAX_IMAGE_MB:-10}
-      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-25000000}
     ports:
       - "${MODEL_BIND:-0.0.0.0}:${MODEL_PORT:-8001}:8000"
-    volumes:
-      - model-cache:/root/.paddlex
-    shm_size: 2gb
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${GPU_ID:-0}"]
-              capabilities: [gpu]
+    depends_on:
+      ocr-model-1:
+        condition: service_healthy
+      ocr-model-2:
+        condition: service_healthy
+      ocr-model-3:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 300s
+      retries: 3
 
 volumes:
-  model-cache:
+  model-cache-1:
+  model-cache-2:
+  model-cache-3:
